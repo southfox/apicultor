@@ -88,7 +88,7 @@ class _ApiaryHomePageState extends State<ApiaryHomePage> {
     if (hive == null) return;
     setState(() => _activeHive = null);
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Revisión de colmena $hive guardada localmente.')),
+      SnackBar(content: Text('Revisión de colmena $hive finalizada.')),
     );
   }
 
@@ -129,7 +129,7 @@ class _ApiaryHomePageState extends State<ApiaryHomePage> {
           const SizedBox(height: 4),
           Text(
             activeHive == null
-                ? 'Listo para trabajar sin conexión'
+                ? 'Vista inicial · persistencia local en el próximo módulo'
                 : 'Revisión en curso · Colmena $activeHive',
             style: TextStyle(
               color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -183,7 +183,7 @@ class _StatusCard extends StatelessWidget {
             Expanded(
               child: Text(
                 activeHive == null
-                    ? 'Modo campo\nLos cambios se guardan en este dispositivo.'
+                    ? 'Modo campo\nPreparado para almacenamiento local.'
                     : 'Cronómetro activo\nColmena $activeHive',
                 style: const TextStyle(fontWeight: FontWeight.w600),
               ),
