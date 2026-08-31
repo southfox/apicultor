@@ -33,6 +33,7 @@ migrate_working_dir/
 .pub/
 /build/
 /macos/Build/
+/ios/Build/
 
 # Symbolication related
 app.*.symbols

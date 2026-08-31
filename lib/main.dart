@@ -1,16 +1,26 @@
+import 'package:apicultor/data/beekeeping_repository.dart';
+import 'package:apicultor/domain/beekeeping_models.dart';
 import 'package:flutter/material.dart';
 
-void main() => runApp(const ApicultorApp());
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  runApp(const ApicultorApp());
+}
 
-class ApicultorApp extends StatelessWidget {
+class ApicultorApp extends StatefulWidget {
   const ApicultorApp({super.key});
 
   @override
+  State<ApicultorApp> createState() => _ApicultorAppState();
+}
+
+class _ApicultorAppState extends State<ApicultorApp> {
+  late final Future<BeekeepingRepository> _repository =
+      BeekeepingRepository.open();
+
+  @override
   Widget build(BuildContext context) {
-    final scheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xffb7791f),
-      brightness: Brightness.light,
-    );
+    final scheme = ColorScheme.fromSeed(seedColor: const Color(0xffb7791f));
     return MaterialApp(
       title: 'Apicultor',
       debugShowCheckedModeBanner: false,
@@ -19,180 +29,339 @@ class ApicultorApp extends StatelessWidget {
         useMaterial3: true,
         scaffoldBackgroundColor: const Color(0xfffffbf5),
       ),
-      home: const ApiaryHomePage(),
+      home: FutureBuilder<BeekeepingRepository>(
+        future: _repository,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) return _StartupError(error: snapshot.error);
+          if (!snapshot.hasData) {
+            return const Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            );
+          }
+          return ApiaryHomePage(repository: snapshot.data!);
+        },
+      ),
     );
   }
 }
 
-enum HiveCondition { i, ii, iii }
-
-class HiveSummary {
-  const HiveSummary({
-    required this.number,
-    required this.condition,
-    required this.queenSeen,
-    required this.pendingTasks,
-  });
-
-  final int number;
-  final HiveCondition condition;
-  final bool queenSeen;
-  final int pendingTasks;
-}
-
 class ApiaryHomePage extends StatefulWidget {
-  const ApiaryHomePage({super.key});
+  const ApiaryHomePage({super.key, required this.repository});
+  final BeekeepingRepository repository;
 
   @override
   State<ApiaryHomePage> createState() => _ApiaryHomePageState();
 }
 
 class _ApiaryHomePageState extends State<ApiaryHomePage> {
-  final List<HiveSummary> _hives = const [
-    HiveSummary(
-      number: 1,
-      condition: HiveCondition.ii,
-      queenSeen: true,
-      pendingTasks: 1,
-    ),
-    HiveSummary(
-      number: 2,
-      condition: HiveCondition.i,
-      queenSeen: true,
-      pendingTasks: 0,
-    ),
-    HiveSummary(
-      number: 3,
-      condition: HiveCondition.iii,
-      queenSeen: false,
-      pendingTasks: 2,
-    ),
-  ];
-  int? _activeHive;
+  late Future<List<Apiary>> _apiaries;
+  int? _selectedApiaryId;
+  DateTime? _inspectionStartedAt;
+  Hive? _activeHive;
 
-  void _startInspection(int hiveNumber) {
-    setState(() => _activeHive = hiveNumber);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text('Revisión de colmena $hiveNumber iniciada.'),
-        action: SnackBarAction(
-          label: 'Finalizar',
-          onPressed: _finishInspection,
-        ),
-      ),
-    );
+  @override
+  void initState() {
+    super.initState();
+    _apiaries = widget.repository.listApiaries();
   }
 
-  void _finishInspection() {
+  void _reload() =>
+      setState(() => _apiaries = widget.repository.listApiaries());
+
+  Future<void> _addApiary() async {
+    final name = await _askForText(
+      title: 'Nuevo apiario',
+      label: 'Nombre del apiario',
+      action: 'Crear',
+    );
+    if (name == null) return;
+    final apiary = await widget.repository.createApiary(name);
+    setState(() {
+      _selectedApiaryId = apiary.id;
+      _apiaries = widget.repository.listApiaries();
+    });
+  }
+
+  Future<void> _addHive(int apiaryId) async {
+    final code = await _askForText(
+      title: 'Nueva colmena',
+      label: 'Código o número',
+      action: 'Crear',
+    );
+    if (code == null) return;
+    try {
+      await widget.repository.createHive(apiaryId: apiaryId, code: code);
+      _reload();
+    } on Exception {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Ese código ya existe en este apiario.'),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<String?> _askForText({
+    required String title,
+    required String label,
+    required String action,
+  }) async {
+    final controller = TextEditingController();
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: InputDecoration(labelText: label),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: Text(action),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return result == null || result.isEmpty ? null : result;
+  }
+
+  void _startInspection(Hive hive) {
+    setState(() {
+      _activeHive = hive;
+      _inspectionStartedAt = DateTime.now();
+    });
+  }
+
+  Future<void> _finishInspection() async {
     final hive = _activeHive;
-    if (hive == null) return;
-    setState(() => _activeHive = null);
+    final startedAt = _inspectionStartedAt;
+    if (hive == null || startedAt == null) return;
+    await widget.repository.finishInspection(
+      hive: hive,
+      startedAt: startedAt,
+      finishedAt: DateTime.now(),
+    );
+    if (!mounted) return;
+    setState(() {
+      _activeHive = null;
+      _inspectionStartedAt = null;
+    });
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Revisión de colmena $hive finalizada.')),
+      SnackBar(
+        content: Text('Inspección de ${hive.code} guardada sin conexión.'),
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final activeHive = _activeHive;
+    return FutureBuilder<List<Apiary>>(
+      future: _apiaries,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) return _StartupError(error: snapshot.error);
+        if (!snapshot.hasData) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        final apiaries = snapshot.data!;
+        if (apiaries.isEmpty) return _EmptyApiaries(onAdd: _addApiary);
+        final selected =
+            apiaries
+                .where((apiary) => apiary.id == _selectedApiaryId)
+                .firstOrNull ??
+            apiaries.first;
+        if (_selectedApiaryId != selected.id) _selectedApiaryId = selected.id;
+        return _ApiaryContent(
+          apiary: selected,
+          repository: widget.repository,
+          activeHive: _activeHive,
+          onSelectApiary: (apiary) =>
+              setState(() => _selectedApiaryId = apiary.id),
+          apiaries: apiaries,
+          onAddApiary: _addApiary,
+          onAddHive: () => _addHive(selected.id),
+          onStartInspection: _startInspection,
+          onFinishInspection: _finishInspection,
+        );
+      },
+    );
+  }
+}
+
+class _ApiaryContent extends StatelessWidget {
+  const _ApiaryContent({
+    required this.apiary,
+    required this.apiaries,
+    required this.repository,
+    required this.activeHive,
+    required this.onSelectApiary,
+    required this.onAddApiary,
+    required this.onAddHive,
+    required this.onStartInspection,
+    required this.onFinishInspection,
+  });
+
+  final Apiary apiary;
+  final List<Apiary> apiaries;
+  final BeekeepingRepository repository;
+  final Hive? activeHive;
+  final ValueChanged<Apiary> onSelectApiary;
+  final VoidCallback onAddApiary;
+  final VoidCallback onAddHive;
+  final ValueChanged<Hive> onStartInspection;
+  final Future<void> Function() onFinishInspection;
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Apicultor'),
+        title: DropdownButtonHideUnderline(
+          child: DropdownButton<Apiary>(
+            value: apiary,
+            items: apiaries
+                .map(
+                  (item) =>
+                      DropdownMenuItem(value: item, child: Text(item.name)),
+                )
+                .toList(),
+            onChanged: (item) => item == null ? null : onSelectApiary(item),
+          ),
+        ),
         actions: [
           IconButton(
-            tooltip: 'Configuración',
-            onPressed: () {},
-            icon: const Icon(Icons.settings_outlined),
+            onPressed: onAddApiary,
+            tooltip: 'Agregar apiario',
+            icon: const Icon(Icons.add_location_alt_outlined),
           ),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: activeHive == null
-            ? () => _startInspection(1)
-            : _finishInspection,
-        icon: Icon(
-          activeHive == null
-              ? Icons.mic_none_outlined
-              : Icons.stop_circle_outlined,
-        ),
+        onPressed: activeHive == null ? onAddHive : onFinishInspection,
+        icon: Icon(activeHive == null ? Icons.add : Icons.stop_circle_outlined),
         label: Text(
-          activeHive == null ? 'Iniciar revisión' : 'Finalizar revisión',
+          activeHive == null ? 'Nueva colmena' : 'Finalizar revisión',
         ),
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          const Text(
-            'Apiario Campo Norte',
-            style: TextStyle(fontSize: 25, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            activeHive == null
-                ? 'Vista inicial · persistencia local en el próximo módulo'
-                : 'Revisión en curso · Colmena $activeHive',
-            style: TextStyle(
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const SizedBox(height: 20),
-          _StatusCard(activeHive: activeHive),
-          const SizedBox(height: 24),
-          const Text(
-            'Mis colmenas',
-            style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(height: 8),
-          ..._hives.map(
-            (hive) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: _HiveCard(
-                hive: hive,
-                active: activeHive == hive.number,
-                onStart: () => _startInspection(hive.number),
+      body: FutureBuilder<List<Hive>>(
+        future: repository.listHives(apiary.id),
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final hives = snapshot.data!;
+          return ListView(
+            padding: const EdgeInsets.all(16),
+            children: [
+              _StatusCard(activeHive: activeHive),
+              const SizedBox(height: 24),
+              const Text(
+                'Colmenas',
+                style: TextStyle(fontSize: 19, fontWeight: FontWeight.w700),
               ),
-            ),
-          ),
-          const SizedBox(height: 86),
-        ],
+              const SizedBox(height: 8),
+              if (hives.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 24),
+                  child: Text(
+                    'Todavía no hay colmenas. Crea la primera para comenzar.',
+                  ),
+                ),
+              ...hives.map(
+                (hive) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _HiveCard(
+                    hive: hive,
+                    active: activeHive?.id == hive.id,
+                    onStart: () => onStartInspection(hive),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 86),
+            ],
+          );
+        },
       ),
     );
   }
 }
 
-class _StatusCard extends StatelessWidget {
-  const _StatusCard({required this.activeHive});
-  final int? activeHive;
+class _EmptyApiaries extends StatelessWidget {
+  const _EmptyApiaries({required this.onAdd});
+  final VoidCallback onAdd;
 
   @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Card(
-      color: scheme.primaryContainer,
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Apicultor')),
+    body: Center(
       child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              activeHive == null
-                  ? Icons.cloud_off_outlined
-                  : Icons.timer_outlined,
-              size: 32,
+            const Icon(Icons.hive_outlined, size: 64),
+            const SizedBox(height: 16),
+            const Text(
+              'Crea tu primer apiario',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                activeHive == null
-                    ? 'Modo campo\nPreparado para almacenamiento local.'
-                    : 'Cronómetro activo\nColmena $activeHive',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
+            const SizedBox(height: 8),
+            const Text(
+              'La información se guarda en SQLite en este dispositivo, incluso sin internet.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            FilledButton.icon(
+              onPressed: onAdd,
+              icon: const Icon(Icons.add),
+              label: const Text('Nuevo apiario'),
             ),
           ],
         ),
       ),
-    );
-  }
+    ),
+  );
+}
+
+class _StatusCard extends StatelessWidget {
+  const _StatusCard({required this.activeHive});
+  final Hive? activeHive;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    color: Theme.of(context).colorScheme.primaryContainer,
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Row(
+        children: [
+          Icon(
+            activeHive == null
+                ? Icons.cloud_off_outlined
+                : Icons.timer_outlined,
+            size: 32,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              activeHive == null
+                  ? 'Modo campo\nSQLite local activo.'
+                  : 'Revisión en curso\nColmena ${activeHive!.code}',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _HiveCard extends StatelessWidget {
@@ -201,7 +370,7 @@ class _HiveCard extends StatelessWidget {
     required this.active,
     required this.onStart,
   });
-  final HiveSummary hive;
+  final Hive hive;
   final bool active;
   final VoidCallback onStart;
 
@@ -214,9 +383,9 @@ class _HiveCard extends StatelessWidget {
     };
     return Card(
       child: ListTile(
-        leading: CircleAvatar(child: Text('${hive.number}')),
+        leading: CircleAvatar(child: Text(hive.code)),
         title: Text(
-          'Colmena ${hive.number}',
+          'Colmena ${hive.code}',
           style: const TextStyle(fontWeight: FontWeight.w700),
         ),
         subtitle: Text(
@@ -233,4 +402,22 @@ class _HiveCard extends StatelessWidget {
       ),
     );
   }
+}
+
+class _StartupError extends StatelessWidget {
+  const _StartupError({required this.error});
+  final Object? error;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    body: Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Text(
+          'No fue posible abrir la base local.\n$error',
+          textAlign: TextAlign.center,
+        ),
+      ),
+    ),
+  );
 }
