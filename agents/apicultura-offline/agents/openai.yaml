@@ -1,0 +1,4 @@
+interface:
+  display_name: "Asistente Apícola Offline"
+  short_description: "Diseño y desarrollo apícola offline"
+  default_prompt: "Usa $apicultura-offline para diseñar o implementar el siguiente componente del cuaderno de campo apícola offline-first."
